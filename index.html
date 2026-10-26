@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Robot Blaster</title>
+<style>
+  :root { --ink:#1b1340; --sun:#ffd23f; --hot:#ff4f6d; --mint:#3ddc97; --sky:#4cc9f0; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { margin:0; height:100%; background:var(--ink); font-family:"Trebuchet MS","Segoe UI",sans-serif; color:#fff; overflow:hidden; touch-action:none; user-select:none; }
+  #app { display:flex; flex-direction:column; height:100%; max-width:960px; margin:0 auto; padding:8px; gap:8px; }
+  #hud { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; font-size:clamp(14px,3.5vw,22px); font-weight:bold; }
+  #hearts { letter-spacing:2px; min-width:80px; }
+  #score { color:var(--sun); }
+  .btns { display:flex; gap:6px; flex-wrap:wrap; }
+  button { font:inherit; font-weight:bold; border:3px solid #fff; border-radius:12px; padding:8px 14px; background:var(--hot); color:#fff; cursor:pointer; box-shadow:0 4px 0 rgba(0,0,0,.35); }
+  button:active { transform:translateY(3px); box-shadow:0 1px 0 rgba(0,0,0,.35); }
+  button:focus-visible { outline:3px solid var(--sun); outline-offset:2px; }
+  .small { padding:6px 10px; background:var(--sky); color:var(--ink); border-width:2px; }
+  #stage { position:relative; flex:1; min-height:0; border:4px solid #fff; border-radius:16px; overflow:hidden; background:#000; }
+  canvas { width:100%; height:100%; display:block; }
+  .overlay { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; background:rgba(27,19,64,.82); text-align:center; padding:16px; }
+  .overlay.hidden { display:none; }
+  .overlay h1 { margin:0; font-size:clamp(32px,9vw,64px); color:var(--sun); text-shadow:4px 4px 0 var(--hot); }
+  .overlay p { margin:0; font-size:clamp(14px,3vw,18px); max-width:420px; line-height:1.4; }
+  .overlay button { font-size:clamp(18px,4vw,26px); padding:12px 28px; background:var(--mint); color:var(--ink); }
+  #touch { display:none; justify-content:space-between; align-items:center; gap:10px; }
+  #touch .grp { display:grid; grid-template-columns:repeat(3,58px); grid-template-rows:repeat(2,58px); gap:6px; }
+  #touch button { width:58px; height:58px; font-size:24px; padding:0; background:var(--sky); color:var(--ink); }
+  #touch #tFire { width:120px; height:78px; font-size:20px; background:var(--hot); color:#fff; }
+  #touch .grp2 { display:flex; flex-direction:column; gap:6px; }
+  #touch #tSpecial { width:120px; height:38px; font-size:14px; background:var(--sun); }
+  @media (pointer:coarse), (max-width:700px) { #touch { display:flex; } }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="hud">
+    <div id="hearts">❤️❤️❤️</div>
+    <div id="score">Score: 0</div>
+    <div class="btns">
+      <button id="wpnBtn" class="small">⚡ Weapon (E)</button>
+      <button id="pauseBtn" class="small">Pause</button>
+      <button id="muteBtn" class="small">Sound: On</button>
+    </div>
+  </div>
+
+  <div id="stage">
+    <canvas id="game"></canvas>
+    <div id="startScreen" class="overlay">
+      <h1>Robot Blaster</h1>
+      <p>Blast the robots marching in from the right. Arrows move, Space shoots. Collect weapon parts and press E to assemble the Mega Blaster. A Giant Monster arrives every 40 points!</p>
+      <button id="startBtn">Start Game</button>
+    </div>
+    <div id="pauseScreen" class="overlay hidden">
+      <h1>Paused</h1>
+      <button id="resumeBtn">Resume</button>
+    </div>
+    <div id="overScreen" class="overlay hidden">
+      <h1>Game Over</h1>
+      <p id="finalScore">Score: 0</p>
+      <button id="restartBtn">Restart</button>
+    </div>
+  </div>
+
+  <div id="touch">
+    <div class="grp">
+      <button id="tUp" style="grid-column:2;grid-row:1">▲</button>
+      <button id="tLeft" style="grid-column:1;grid-row:2">◀</button>
+      <button id="tDown" style="grid-column:2;grid-row:2">▼</button>
+      <button id="tRight" style="grid-column:3;grid-row:2">▶</button>
+    </div>
+    <div class="grp2"><button id="tSpecial">⚡ WEAPON</button><button id="tFire">FIRE</button></div>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---------- Setup ----------
+  const W = 800, H = 450, GROUND = 380;          // virtual game size
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+  const $ = id => document.getElementById(id);
+  const ui = {
+    hearts: $("hearts"), score: $("score"), pause: $("pauseBtn"), mute: $("muteBtn"),
+    start: $("startScreen"), pauseScr: $("pauseScreen"), over: $("overScreen"), final: $("finalScore")
+  };
+
+  function resize() {
+    const r = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    canvas.width = r.width * dpr; canvas.height = r.height * dpr;
+    const s = Math.min(canvas.width / W, canvas.height / H);
+    ctx.setTransform(s, 0, 0, s, (canvas.width - W * s) / 2, (canvas.height - H * s) / 2);
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  // ---------- Sound (generated with Web Audio, no files) ----------
+  let muted = false, audio = null;
+  function beep(freq, end, dur, type, vol) {
+    if (muted) return;
+    try {
+      audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+      if (audio.state === "suspended") audio.resume();
+      const o = audio.createOscillator(), g = audio.createGain();
+      o.type = type; o.frequency.setValueAtTime(freq, audio.currentTime);
+      o.frequency.exponentialRampToValueAtTime(end, audio.currentTime + dur);
+      g.gain.setValueAtTime(vol, audio.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + dur);
+      o.connect(g); g.connect(audio.destination);
+      o.start(); o.stop(audio.currentTime + dur);
+    } catch (e) { /* audio unavailable */ }
+  }
+  const sfx = {
+    shoot: () => beep(900, 200, 0.12, "square", 0.08),
+    hit:   () => beep(300, 60, 0.25, "sawtooth", 0.12),
+    hurt:  () => beep(160, 40, 0.4, "triangle", 0.2)
+  };
+
+  // ---------- State ----------
+  let state = "menu";            // menu | playing | paused | over
+  let player, bullets, enemies, particles, score, hearts, spawnTimer, shootCooldown, bgX, time;
+  let pickups, shots, boss, weapon, nextBoss, partTimer, banner;
+  const keys = { left:false, right:false, up:false, down:false, fire:false };
+
+  function reset() {
+    player = { x:80, y:GROUND - 56, w:40, h:56, speed:260, invuln:0 };
+    bullets = []; enemies = []; particles = [];
+    pickups = []; shots = []; boss = null; weapon = { parts:0, built:false, charges:0 };
+    nextBoss = 40; partTimer = 2; banner = null;
+    score = 0; hearts = 3; spawnTimer = 1; shootCooldown = 0; bgX = 0; time = 0;
+    updateHUD();
+  }
+
+  function updateHUD() {
+    ui.hearts.textContent = hearts > 0 ? "❤️".repeat(hearts) : "💔";
+    ui.score.textContent = "Score: " + score;
+  }
+
+  // Difficulty: robots speed up every 50 points (capped)
+  const enemySpeed = () => Math.min(110 + score * 1.2, 380);
+  const spawnDelay = () => Math.max(1.5 - score * 0.0035, 0.55);
+
+  // ---------- Game flow ----------
+  function startGame() {
+    reset(); state = "playing";
+    ui.start.classList.add("hidden"); ui.over.classList.add("hidden"); ui.pauseScr.classList.add("hidden");
+    ui.pause.textContent = "Pause";
+    beep(400, 800, 0.15, "square", 0.08);   // also unlocks audio on first click
+  }
+  function togglePause() {
+    if (state === "playing") { state = "paused"; ui.pauseScr.classList.remove("hidden"); ui.pause.textContent = "Resume"; }
+    else if (state === "paused") { state = "playing"; ui.pauseScr.classList.add("hidden"); ui.pause.textContent = "Pause"; last = performance.now(); }
+  }
+  function gameOver() {
+    state = "over"; ui.final.textContent = "Final score: " + score;
+    ui.over.classList.remove("hidden");
+  }
+
+  // ---------- Actions ----------
+  function shoot() {
+    if (state !== "playing" || shootCooldown > 0) return;
+    bullets.push({ x:player.x + player.w, y:player.y + 22, w:22, h:8, vx:620, dmg:10 });
+    shootCooldown = 0.22; sfx.shoot();
+  }
+  function spawnEnemy() {
+    const size = 44 + Math.random() * 12;
+    enemies.push({ x:W + 10, y:30 + Math.random() * (GROUND - size - 30), w:size, h:size,
+                   t: Math.random() * 0.5, vy: 0, mult: 1, phase: Math.random() * 6, color: ["#ff4f6d","#b388ff","#ff9f1c","#4cc9f0"][Math.floor(Math.random()*4)] });
+  }
+  function burst(x, y, color) {
+    for (let i = 0; i < 14; i++) {
+      const a = Math.random() * Math.PI * 2, s = 80 + Math.random() * 220;
+      particles.push({ x, y, vx:Math.cos(a) * s, vy:Math.sin(a) * s, life:0.5, color });
+    }
+  }
+  const hit = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+
+  // ---------- Weapon parts, special weapon, giant monster ----------
+  const PARTS = [{ name:"Barrel", icon:"🔩" }, { name:"Power Core", icon:"💎" }, { name:"Battery", icon:"🔋" }, { name:"Energy Cell", icon:"⚡" }];
+
+  function say(text) { banner = { text, t:2.2 }; }
+
+  function hurtPlayer() {
+    hearts--; player.invuln = 1.2; sfx.hurt();
+    burst(player.x + 20, player.y + 28, "#ffd23f"); updateHUD();
+    if (hearts <= 0) { gameOver(); return true; }
+    return false;
+  }
+
+  function startBoss() {
+    for (const e of enemies) burst(e.x + e.w / 2, e.y + e.h / 2, e.color);   // clear the arena
+    enemies = []; shots = [];
+    boss = { x:W + 60, y:GROUND - 210, w:190, h:210, hp:1000, max:1000, phase:"enter", t:0, shootT:1.5, flash:0 };
+    say("WARNING! GIANT MONSTER!"); beep(120, 50, 0.8, "sawtooth", 0.2);
+  }
+
+  // E key / weapon button: assemble the parts, then fire the Mega Blaster at the monster
+  function special() {
+    if (state !== "playing") return;
+    if (weapon.parts >= 3 && !weapon.built) {
+      weapon.built = true; weapon.charges = 1;
+      say("MEGA BLASTER ASSEMBLED!"); beep(300, 1200, 0.5, "square", 0.12); return;
+    }
+    if (!weapon.built) { say("Collect all 3 weapon parts first"); return; }
+    if (!boss || boss.phase !== "fight") { say("Save the Mega Blaster for the monster!"); return; }
+    if (weapon.charges <= 0) { say("EMPTY! Grab a ⚡ energy cell to recharge"); return; }
+    weapon.charges--;
+    bullets.push({ mega:true, dmg:250, x:player.x + player.w, y:player.y + 4, w:150, h:40, vx:720 });
+    beep(200, 1400, 0.4, "sawtooth", 0.15);
+  }
+
+  function updateExtras(dt) {
+    if (banner && (banner.t -= dt) <= 0) banner = null;
+    const pbox = { x:player.x + 6, y:player.y + 4, w:player.w - 12, h:player.h - 4 };
+
+    // weapon part pickups (the next missing part floats in from the right)
+    // next needed item: missing weapon part, or an energy cell once the blaster has been fired
+    const need = weapon.parts < 3 ? weapon.parts : (weapon.built && weapon.charges < 1 ? 3 : -1);
+    if (need >= 0 && pickups.length === 0 && (partTimer -= dt) <= 0) {
+      pickups.push({ x:W + 20, y:70 + Math.random() * (GROUND - 130), type:need, phase:Math.random() * 6 });
+    }
+    for (const p of pickups) {
+      p.x -= 110 * dt;
+      if (hit(pbox, { x:p.x - 18, y:p.y - 18, w:36, h:36 })) {
+        p.dead = true; partTimer = 2; beep(500, 1000, 0.15, "triangle", 0.12);
+        if (p.type === 3) { weapon.charges = 1; say("RECHARGED! Press E to fire"); }
+        else { weapon.parts++; say(weapon.parts === 3 ? "All parts! Press E to assemble" : PARTS[p.type].name + " collected " + weapon.parts + "/3"); }
+      } else if (p.x < -30) { p.dead = true; partTimer = 1.5; }
+    }
+    pickups = pickups.filter(p => !p.dead);
+
+    // monster fireballs
+    for (const s of shots) {
+      s.x += s.vx * dt; s.y += s.vy * dt;
+      const box = { x:s.x - s.r, y:s.y - s.r, w:s.r * 2, h:s.r * 2 };
+      for (const bl of bullets) if (bl.mega && hit(bl, box)) s.dead = true;
+      if (!s.dead && player.invuln <= 0 && hit(pbox, box)) { s.dead = true; if (hurtPlayer()) return true; }
+      if (s.x < -30 || s.y < -30 || s.y > H + 30) s.dead = true;
+    }
+    shots = shots.filter(s => !s.dead);
+
+    // boss trigger every 40 points
+    if (!boss) { if (score >= nextBoss) startBoss(); return false; }
+
+    const b = boss; b.t += dt; if (b.flash > 0) b.flash -= dt;
+    if (b.phase === "enter") {
+      b.x -= 110 * dt;
+      if (b.x <= W - 230) { b.x = W - 230; b.phase = "fight"; }
+    } else if (b.phase === "fight") {
+      const rage = 1 - b.hp / b.max;
+      const ty = player.y + player.h / 2 - b.h / 2 + Math.sin(b.t * 2) * 50, sp = 80 + rage * 110;
+      b.y += Math.max(-sp * dt, Math.min(sp * dt, ty - b.y));
+      b.y = Math.max(20, Math.min(GROUND - b.h, b.y));
+
+      b.shootT -= dt;
+      if (b.shootT <= 0) {
+        b.shootT = 1.7 - rage * 0.9 + Math.random() * 0.4;
+        const sx = b.x + 20, sy = b.y + b.h * 0.45, n = rage > 0.5 ? 3 : 1, v = 240 + rage * 120;
+        const a0 = Math.atan2(player.y + 28 - sy, player.x + 20 - sx);
+        for (let i = 0; i < n; i++) {
+          const a = a0 + (i - (n - 1) / 2) * 0.28;
+          shots.push({ x:sx, y:sy, vx:Math.cos(a) * v, vy:Math.sin(a) * v, r:11 });
+        }
+        beep(220, 90, 0.2, "sawtooth", 0.1);
+      }
+      for (const bl of bullets) if (!bl.dead && hit(bl, b)) {
+        bl.dead = true; b.hp -= bl.dmg; b.flash = 0.08; sfx.hit();
+        if (bl.mega) burst(bl.x + bl.w, bl.y + 20, "#9ef0ff");
+      }
+      if (b.hp <= 0) { b.hp = 0; b.phase = "dying"; b.t = 0; shots = []; say("MONSTER DOWN!"); }
+      else if (player.invuln <= 0 && hit(pbox, { x:b.x + 20, y:b.y + 10, w:b.w - 30, h:b.h - 20 })) {
+        if (hurtPlayer()) return true;
+      }
+    } else {                                        // dying: explosions, then the game scrolls again
+      if (Math.random() < 0.4) burst(b.x + Math.random() * b.w, b.y + Math.random() * b.h, ["#ffd23f", "#ff4f6d", "#fff"][Math.floor(Math.random() * 3)]);
+      if (b.t > 1.8) {
+        score += 100; hearts = Math.min(3, hearts + 1);
+        weapon = { parts:0, built:false, charges:0 }; pickups = []; boss = null; nextBoss = score + 40; partTimer = 2;
+        updateHUD(); say("VICTORY! +100 points");
+      }
+    }
+    return false;
+  }
+
+  // ---------- Update ----------
+  function update(dt) {
+    time += dt;
+    if (!boss) bgX = (bgX + dt * (40 + score * 0.3)) % W;   // world freezes during the boss fight
+    shootCooldown -= dt;
+    if (player.invuln > 0) player.invuln -= dt;
+
+    // player
+    if (keys.left)  player.x -= player.speed * dt;
+    if (keys.right) player.x += player.speed * dt;
+    if (keys.up)    player.y -= player.speed * dt;
+    if (keys.down)  player.y += player.speed * dt;
+    player.x = Math.max(10, Math.min(W * 0.6, player.x));
+    player.y = Math.max(30, Math.min(GROUND - player.h, player.y));
+    if (keys.fire) shoot();
+
+    // enemies
+    if (!boss) {
+      spawnTimer -= dt;
+      if (spawnTimer <= 0) { spawnEnemy(); spawnTimer = spawnDelay() * (0.7 + Math.random() * 0.6); }
+    }
+    const spd = enemySpeed();
+    for (const e of enemies) {
+      e.t -= dt;
+      if (e.t <= 0) {                                   // new random behaviour at a random moment
+        const r = Math.random();
+        e.t = 0.3 + Math.random() * 1.1;
+        e.vy = r < 0.6 ? (Math.random() - 0.5) * 260 : 0;
+        e.mult = r < 0.15 ? 2.4 : r < 0.3 ? 0.2 : 0.6 + Math.random();   // dash / stall / normal
+      }
+      e.x -= spd * e.mult * dt;
+      e.y += e.vy * dt;
+      if (e.y < 30 || e.y > GROUND - e.h) { e.vy = -e.vy; e.y = Math.max(30, Math.min(GROUND - e.h, e.y)); }
+    }
+
+    // bullets
+    for (const b of bullets) b.x += b.vx * dt;
+
+    // bullet vs enemy
+    for (const b of bullets) for (const e of enemies) {
+      if (!b.dead && !e.dead && hit(b, e)) {
+        b.dead = e.dead = true; score += 10; sfx.hit();
+        burst(e.x + e.w / 2, e.y + e.h / 2, e.color); updateHUD();
+      }
+    }
+
+    // enemy vs player
+    for (const e of enemies) {
+      if (!e.dead && player.invuln <= 0 && hit({x:player.x+6,y:player.y+4,w:player.w-12,h:player.h-4}, e)) {
+        e.dead = true; hearts--; player.invuln = 1.2; sfx.hurt();
+        burst(player.x + 20, player.y + 28, "#ffd23f"); updateHUD();
+        if (hearts <= 0) { gameOver(); return; }
+      } else if (!e.dead && e.x + e.w < 0) {           // robot escaped: no penalty
+        e.dead = true;
+      }
+    }
+
+    if (updateExtras(dt)) return;
+
+    // particles
+    for (const p of particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
+
+    // cleanup
+    bullets = bullets.filter(b => !b.dead && b.x < W + 40);
+    enemies = enemies.filter(e => !e.dead);
+    particles = particles.filter(p => p.life > 0);
+  }
+
+  // ---------- Drawing ----------
+  function rr(x, y, w, h, r, fill) {
+    ctx.beginPath(); ctx.roundRect(x, y, w, h, r); ctx.fillStyle = fill; ctx.fill();
+  }
+
+  function drawBackground() {
+    const g = ctx.createLinearGradient(0, 0, 0, GROUND);
+    g.addColorStop(0, "#2b1b6b"); g.addColorStop(1, "#ff7eb6");
+    ctx.fillStyle = g; ctx.fillRect(-200, -200, W + 400, H + 400);
+
+    // sun
+    ctx.fillStyle = "#ffd23f"; ctx.beginPath(); ctx.arc(620, 150, 50, 0, 7); ctx.fill();
+
+    // far hills, near hills, and clouds scroll at different speeds (parallax)
+    layer(0.3, "#5b3fa0", 270, 90, 260);
+    layer(0.6, "#3a2780", 320, 70, 180);
+    ctx.fillStyle = "rgba(255,255,255,.8)";
+    for (let i = 0; i < 4; i++) {
+      const cx = ((i * 260 - bgX * 0.2) % (W + 200) + W + 200) % (W + 200) - 100;
+      ctx.beginPath(); ctx.arc(cx, 70 + (i % 2) * 40, 22, 0, 7); ctx.arc(cx + 24, 66 + (i % 2) * 40, 28, 0, 7); ctx.arc(cx + 50, 72 + (i % 2) * 40, 20, 0, 7); ctx.fill();
+    }
+
+    // ground
+    ctx.fillStyle = "#2ecc71"; ctx.fillRect(-200, GROUND, W + 400, 14);
+    ctx.fillStyle = "#6b4226"; ctx.fillRect(-200, GROUND + 14, W + 400, H);
+    ctx.fillStyle = "#53341d";
+    for (let x = -((bgX * 1.5) % 60); x < W + 60; x += 60) ctx.fillRect(x, GROUND + 30, 30, 8);
+  }
+  function layer(speed, color, base, amp, period) {
+    ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(-200, GROUND);
+    for (let x = -200; x <= W + 200; x += 10) ctx.lineTo(x, base - Math.abs(Math.sin((x + bgX * speed) / period * Math.PI)) * amp);
+    ctx.lineTo(W + 200, GROUND); ctx.fill();
+  }
+
+  function drawPlayer() {
+    if (player.invuln > 0 && Math.floor(time * 12) % 2) return;   // blink when hurt
+    const { x, y } = player, step = state === "playing" && (keys.left || keys.right || keys.up || keys.down) ? Math.sin(time * 18) * 5 : 0;
+    ctx.fillStyle = "#2c3e50"; ctx.fillRect(x + 8, y + 42, 10, 14 + step); ctx.fillRect(x + 22, y + 42, 10, 14 - step); // legs
+    rr(x + 4, y + 20, 32, 26, 6, "#3ddc97");                         // body
+    rr(x + 8, y + 2, 24, 22, 8, "#ffcf99");                          // face
+    rr(x + 5, y - 2, 30, 12, 6, "#2e7d32");                          // helmet
+    ctx.fillStyle = "#000"; ctx.fillRect(x + 22, y + 11, 4, 4);      // eye
+    rr(x + 26, y + 24, 24, 9, 3, weapon.built ? "#00e5ff" : "#455a64");                         // gun
+    rr(x + 46, y + 22, 6, 13, 2, "#ffd23f");                         // muzzle
+  }
+
+  function drawEnemy(e) {
+    const { x, y, w, h } = e, bob = Math.sin(time * 8 + e.phase) * 2;
+    ctx.fillStyle = "#fff"; ctx.fillRect(x + w / 2 - 2, y - 12 + bob, 4, 12);           // antenna
+    ctx.fillStyle = "#ff4f6d"; ctx.beginPath(); ctx.arc(x + w / 2, y - 12 + bob, 5, 0, 7); ctx.fill();
+    rr(x, y, w, h, 10, e.color);                                                         // body
+    rr(x + 6, y + 8, w - 12, h * 0.4, 6, "#1b1340");                                     // visor
+    ctx.fillStyle = "#fff59d";
+    ctx.beginPath(); ctx.arc(x + w * 0.33, y + 8 + h * 0.2, 5, 0, 7); ctx.arc(x + w * 0.67, y + 8 + h * 0.2, 5, 0, 7); ctx.fill();
+    ctx.fillStyle = "#1b1340"; ctx.fillRect(x + 10, y + h * 0.7, w - 20, 5);             // mouth
+    ctx.fillStyle = "#fff"; for (let i = 0; i < 4; i++) ctx.fillRect(x + 12 + i * ((w - 28) / 3), y + h * 0.7, 3, 5);
+  }
+
+  function drawPickup(p) {
+    const y = p.y + Math.sin(time * 5 + p.phase) * 5;
+    ctx.shadowColor = "#ffd23f"; ctx.shadowBlur = 16;
+    ctx.beginPath(); ctx.arc(p.x, y, 20, 0, 7); ctx.fillStyle = "rgba(255,210,63,.35)"; ctx.fill(); ctx.shadowBlur = 0;
+    ctx.font = "26px serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = "#fff";
+    ctx.fillText(PARTS[p.type].icon, p.x, y + 1);
+  }
+
+  function drawShot(s) {
+    ctx.shadowColor = "#ff4f6d"; ctx.shadowBlur = 14;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, 7); ctx.fillStyle = "#ff9f1c"; ctx.fill();
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r * 0.5, 0, 7); ctx.fillStyle = "#fff59d"; ctx.fill(); ctx.shadowBlur = 0;
+  }
+
+  function drawArena() {                       // red tint + pulsing walls while the world is frozen
+    ctx.fillStyle = "rgba(70,0,30,.35)"; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "rgba(255,79,109," + (0.5 + Math.sin(time * 6) * 0.2) + ")";
+    ctx.fillRect(0, 0, W, 6); ctx.fillRect(0, GROUND + 8, W, 6); ctx.fillRect(0, 0, 6, H); ctx.fillRect(W - 6, 0, 6, H);
+  }
+
+  function drawBoss() {
+    const { x, y, w, h } = boss;
+    if (boss.phase === "dying" && Math.floor(time * 20) % 2) return;
+    const hurt = boss.flash > 0, body = hurt ? "#fff" : "#7b2cbf", dark = hurt ? "#eee" : "#4a1a7a";
+    ctx.fillStyle = "#ffd23f";                                                           // horns
+    ctx.beginPath(); ctx.moveTo(x + 20, y + 25); ctx.lineTo(x + 5, y - 40); ctx.lineTo(x + 70, y + 10); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x + w - 70, y + 10); ctx.lineTo(x + w - 5, y - 40); ctx.lineTo(x + w - 20, y + 25); ctx.fill();
+    rr(x + 20, y + h - 30, 55, 40, 12, dark); rr(x + w - 75, y + h - 30, 55, 40, 12, dark); // feet
+    rr(x, y, w, h - 10, 50, body);                                                       // body
+    rr(x + 30, y + h * 0.55, w - 60, h * 0.3, 26, dark);                                 // belly
+    rr(x - 26, y + h * 0.45, 46, 80, 20, body);                                          // reaching arm
+    ctx.fillStyle = "#ffd23f"; for (let i = 0; i < 3; i++) ctx.fillRect(x - 30, y + h * 0.45 + 10 + i * 22, 14, 8);
+    const dx = Math.max(-5, Math.min(5, (player.x - x) / 60)), dy = Math.max(-5, Math.min(5, (player.y - y) / 60));
+    for (const ex of [x + 48, x + 105]) {                                                // eyes track the hero
+      ctx.beginPath(); ctx.arc(ex, y + 55, 22, 0, 7); ctx.fillStyle = "#fff"; ctx.fill();
+      ctx.beginPath(); ctx.arc(ex + dx, y + 55 + dy, 10, 0, 7); ctx.fillStyle = "#ff1744"; ctx.fill();
+    }
+    rr(x + 35, y + 95, w - 70, 36, 14, "#1b1340");                                       // mouth
+    ctx.fillStyle = "#fff"; for (let i = 0; i < 5; i++) { ctx.beginPath(); ctx.moveTo(x + 42 + i * 21, y + 95); ctx.lineTo(x + 52 + i * 21, y + 115); ctx.lineTo(x + 62 + i * 21, y + 95); ctx.fill(); }
+  }
+
+  function drawOverlay() {                     // weapon panel, boss health bar, banner
+    const font = "'Trebuchet MS',sans-serif";
+    ctx.textBaseline = "middle";
+    for (let i = 0; i < 3; i++) {
+      rr(12 + i * 40, 10, 36, 36, 8, "rgba(0,0,0,.45)");
+      ctx.globalAlpha = i < weapon.parts ? 1 : 0.25;
+      ctx.font = "22px serif"; ctx.textAlign = "center"; ctx.fillStyle = "#fff"; ctx.fillText(PARTS[i].icon, 30 + i * 40, 29);
+      ctx.globalAlpha = 1;
+    }
+    ctx.textAlign = "left"; ctx.font = "bold 14px " + font; ctx.fillStyle = "#fff";
+    ctx.fillText(weapon.built ? (weapon.charges > 0 ? "Mega Blaster READY" + (boss ? " - press E" : " - saved for boss") : "EMPTY - collect \u26A1 to recharge")
+      : weapon.parts === 3 ? "Press E to assemble!" : "Weapon parts " + weapon.parts + "/3", 138, 28);
+    if (boss) {
+      const bx = 350, bw = W - 14 - bx;
+      rr(bx, 12, bw, 24, 8, "rgba(0,0,0,.6)");
+      rr(bx + 3, 15, Math.max(0, (bw - 6) * boss.hp / boss.max), 18, 6, "#ff4f6d");
+      ctx.textAlign = "center"; ctx.font = "bold 12px " + font; ctx.fillStyle = "#fff";
+      ctx.fillText("GIANT MONSTER  " + Math.ceil(boss.hp) + " / " + boss.max, bx + bw / 2, 25);
+    }
+    if (banner) {
+      ctx.globalAlpha = Math.min(1, banner.t); ctx.textAlign = "center"; ctx.font = "bold 30px " + font;
+      ctx.lineWidth = 6; ctx.strokeStyle = "#1b1340"; ctx.strokeText(banner.text, W / 2, 120);
+      ctx.fillStyle = "#ffd23f"; ctx.fillText(banner.text, W / 2, 120); ctx.globalAlpha = 1;
+    }
+  }
+
+  function draw() {
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
+    drawBackground();
+    if (boss) drawArena();
+    if (player) {
+      drawPlayer();
+      enemies.forEach(drawEnemy);
+      pickups.forEach(drawPickup);
+      if (boss) drawBoss();
+      shots.forEach(drawShot);
+      for (const b of bullets) {                                                          // energy bolts
+        ctx.shadowColor = "#4cc9f0"; ctx.shadowBlur = b.mega ? 28 : 12;
+        rr(b.x, b.y, b.w, b.h, 4, b.mega ? "#fff176" : "#9ef0ff"); ctx.shadowBlur = 0;
+      }
+      for (const p of particles) { ctx.globalAlpha = Math.max(p.life * 2, 0); ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, 5, 5); }
+      ctx.globalAlpha = 1;
+      drawOverlay();
+    }
+    ctx.restore();
+  }
+
+  // ---------- Main loop ----------
+  let last = performance.now();
+  function loop(now) {
+    const dt = Math.min((now - last) / 1000, 0.05); last = now;
+    if (state === "playing") update(dt);
+    else if (state === "menu") { bgX = (bgX + dt * 40) % W; time += dt; }
+    draw();
+    requestAnimationFrame(loop);
+  }
+  reset();
+  requestAnimationFrame(loop);
+
+  // ---------- Input ----------
+  window.addEventListener("keydown", e => {
+    if (e.code === "ArrowLeft")  keys.left = true;
+    if (e.code === "ArrowRight") keys.right = true;
+    if (e.code === "ArrowUp")    keys.up = true;
+    if (e.code === "ArrowDown")  keys.down = true;
+    if (e.code === "Space") { keys.fire = true; e.preventDefault(); }
+    if (e.code === "KeyP" || e.code === "Escape") togglePause();
+    if (e.code === "KeyE" && !e.repeat) special();
+    if (["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"].includes(e.code)) e.preventDefault();
+  });
+  window.addEventListener("keyup", e => {
+    if (e.code === "ArrowLeft")  keys.left = false;
+    if (e.code === "ArrowRight") keys.right = false;
+    if (e.code === "ArrowUp")    keys.up = false;
+    if (e.code === "ArrowDown")  keys.down = false;
+    if (e.code === "Space") keys.fire = false;
+  });
+  window.addEventListener("blur", () => { keys.left = keys.right = keys.up = keys.down = keys.fire = false; if (state === "playing") togglePause(); });
+
+  // Touch / mouse hold buttons
+  function hold(id, key) {
+    const el = $(id), on = e => { e.preventDefault(); keys[key] = true; }, off = e => { e.preventDefault(); keys[key] = false; };
+    el.addEventListener("pointerdown", on);
+    ["pointerup", "pointerleave", "pointercancel"].forEach(t => el.addEventListener(t, off));
+    el.addEventListener("contextmenu", e => e.preventDefault());
+  }
+  hold("tLeft", "left"); hold("tRight", "right"); hold("tUp", "up"); hold("tDown", "down"); hold("tFire", "fire");
+
+  // Buttons
+  $("startBtn").addEventListener("click", startGame);
+  $("restartBtn").addEventListener("click", startGame);
+  $("resumeBtn").addEventListener("click", togglePause);
+  ui.pause.addEventListener("click", () => { if (state === "playing" || state === "paused") togglePause(); });
+  ui.mute.addEventListener("click", () => { muted = !muted; ui.mute.textContent = "Sound: " + (muted ? "Off" : "On"); });
+  $("wpnBtn").addEventListener("click", special);
+  $("tSpecial").addEventListener("pointerdown", e => { e.preventDefault(); special(); });
+  [ui.pause, ui.mute, $("wpnBtn")].forEach(b => b.addEventListener("keydown", e => { if (e.code === "Space") e.preventDefault(); }));
+})();
+</script>
+</body>
+</html>
